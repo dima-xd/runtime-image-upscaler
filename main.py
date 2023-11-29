@@ -1,20 +1,18 @@
 import os
-import subprocess
 import threading
-import zipfile
 from queue import Queue
-from sys import platform
-from urllib.request import urlretrieve
 
+import cv2
+from basicsr.archs.rrdbnet_arch import RRDBNet
+from realesrgan import RealESRGANer
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
-# Upscale options #
-models = ["realesrgan-x4plus", "realesrnet-x4plus", "realesrgan-x4plus-anime"]
-scales = ["2", "3", "4"]
-
-filename = "realesrgan"
-url = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-"
+models = {
+    "realesrgan-x4plus": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
+    "realesrgan-x4plus-anime": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4"
+                               "/RealESRGAN_x4plus_anime_6B.pth"
+}
 
 
 class FolderListener(FileSystemEventHandler):
@@ -31,62 +29,53 @@ class FolderListener(FileSystemEventHandler):
             self.file_queue.put(event.src_path)
 
 
-def run_realesrgan(file_queue, output_folder, model, scale):
+def run_realesrgan(file_queue, output_folder, realesrganer):
     while True:
         file_path = file_queue.get()
         if file_path is None:
             break
 
-        command = [
-            "./" + filename + "/realesrgan-ncnn-vulkan",
-            "-i", file_path,
-            "-o", output_folder + os.path.basename(file_path),
-            "-n", model,
-            "-s", scale
-        ]
-
         print(f"Trying to upscale: {file_path}")
 
-        try:
-            subprocess.run(command, check=True)
-            print(f"Successfully upscaled: {file_path}")
-        except subprocess.CalledProcessError as proc_err:
-            print(f"Error executing command: {proc_err}")
+        output, _ = realesrganer.enhance(cv2.imread(file_path, cv2.IMREAD_UNCHANGED))
+        cv2.imwrite(output_folder + os.path.basename(file_path), output)
+
+        print("Successfully upscaled")
 
 
-def run():
+def main():
     folder_to_listen = input("Choose folder to listen: ")
     output_folder = input("Choose output folder: ")
 
+    models_to_choose = ["realesrgan-x4plus", "realesrgan-x4plus-anime"]
+
     print("Available models:")
-    for i, model in enumerate(models, start=1):
+    for i, model in enumerate(models_to_choose, start=1):
         print(f"{i}. {model}")
 
     while True:
         try:
             model_index = int(input("Choose a model by index: "))
             if 1 <= model_index <= len(models):
-                model_choice = models[model_index - 1]
+                model_choice = models[models_to_choose[model_index - 1]]
                 break
             else:
                 print("Invalid index. Please choose from the available options.")
         except ValueError:
             print("Invalid input. Please enter a number.")
 
-    print("Available scales:")
-    for i, scale in enumerate(scales, start=1):
-        print(f"{i}. {scale}")
+    RealESRGAN_models = {
+        "realesrgan-x4plus": RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4),
+        "realesrgan-x4plus_anime": RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=6, num_grow_ch=32,
+                                           scale=4)
+    }
 
-    while True:
-        try:
-            scale_index = int(input("Choose a scale by index: "))
-            if 1 <= scale_index <= len(scales):
-                scale_choice = scales[scale_index - 1]
-                break
-            else:
-                print("Invalid index. Please choose from the available options.")
-        except ValueError:
-            print("Invalid input. Please enter a number.")
+    realesrganer = RealESRGANer(scale=4,
+                                model_path=model_choice,
+                                model=RealESRGAN_models[models_to_choose[model_index - 1]],
+                                device="cuda")
+
+    print("Ready to accept files")
 
     file_queue = Queue()
 
@@ -96,7 +85,7 @@ def run():
     observer.start()
 
     processing_thread = threading.Thread(target=run_realesrgan,
-                                         args=(file_queue, output_folder, model_choice, scale_choice))
+                                         args=(file_queue, output_folder, realesrganer))
     processing_thread.start()
 
     try:
@@ -111,38 +100,5 @@ def run():
     processing_thread.join()
 
 
-def download_and_extract():
-    zip_filename = os.path.join(filename, filename + '.zip')
-
-    urlretrieve(url, zip_filename)
-
-    with zipfile.ZipFile(zip_filename, 'r') as zip_ref:
-        zip_ref.extractall(filename)
-
-    os.remove(zip_filename)
-
-
 if __name__ == '__main__':
-    print("Using OS " + platform)
-
-    if not os.path.exists(filename):
-        os.makedirs(filename)
-
-        if platform.startswith("win"):
-            url += "windows.zip"
-        if platform.startswith("linux"):
-            url = "ubuntu.zip"
-        elif platform.startswith("mac"):
-            url = "macos.zip"
-
-        try:
-            download_and_extract()
-            print("Downloaded and extracted successfully")
-
-            run()
-
-        except Exception as e:
-            print(f"Error: {e}")
-
-    else:
-        run()
+    main()
